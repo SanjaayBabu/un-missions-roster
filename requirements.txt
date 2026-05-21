@@ -1,0 +1,8 @@
+certifi>=2024.2
+pandas>=2.0
+streamlit>=1.35
+schedule>=1.2
+rich>=13.7
+# playwright is only needed locally (probe command, un.int scraper)
+# Streamlit Cloud installs it fine but won't have browser binaries — that's OK
+playwright>=1.44

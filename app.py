@@ -390,9 +390,45 @@ else:
             st.session_state.roster = []
             st.rerun()
 
-# ── Sidebar: data info + refresh ─────────────────────────────────────────────
+# ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
+    st.markdown("### Save / Load roster")
+    st.caption("Save your roster as a file and reload it later — useful when building lists weeks in advance.")
+
+    # Save
+    if st.session_state.roster:
+        import json
+        roster_json = json.dumps(st.session_state.roster, indent=2)
+        st.download_button(
+            label="⬇ Save roster (.json)",
+            data=roster_json,
+            file_name="roster.json",
+            mime="application/json",
+            use_container_width=True,
+        )
+    else:
+        st.button("⬇ Save roster (.json)", disabled=True, use_container_width=True)
+
+    # Load
+    uploaded = st.file_uploader("Load a saved roster", type="json", label_visibility="collapsed")
+    if uploaded is not None:
+        import json
+        try:
+            loaded = json.load(uploaded)
+            if isinstance(loaded, list) and all(
+                isinstance(e, dict) and {"country", "position", "full_name"} <= e.keys()
+                for e in loaded
+            ):
+                st.session_state.roster = loaded
+                st.success(f"Loaded {len(loaded)} attendees.")
+                st.rerun()
+            else:
+                st.error("File format not recognised.")
+        except Exception:
+            st.error("Could not read file.")
+
+    st.divider()
     st.markdown("### About")
     st.markdown(
         "Build your event attendee list by adding diplomatic representatives "

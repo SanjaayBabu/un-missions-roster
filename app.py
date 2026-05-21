@@ -77,11 +77,17 @@ def _protocol_rank(position: str, rank: str) -> tuple[int, int]:
 
     if "permanent representative" in pos and "deputy" not in pos and "acting" not in pos:
         return (1, 0)
+    # US uses bare "Representative" for the same top role as PR
+    if pos == "representative":
+        return (1, 0)
     if "acting permanent representative" in pos:
         return (2, 0)
     if "chargé" in pos or "charge" in pos:
         return (3, 0)
     if "deputy permanent representative" in pos:
+        return (4, 0 if is_ambassador else 1)
+    # US equivalent of DPR
+    if pos.startswith("deputy representative"):
         return (4, 0 if is_ambassador else 1)
     if "permanent observer" in pos and "deputy" not in pos:
         return (5, 0)

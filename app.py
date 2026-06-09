@@ -6,9 +6,12 @@ Local:   streamlit run app.py
 Deploy:  push to GitHub, connect at share.streamlit.io, main file = app.py
 """
 
+import base64
+
 import pandas as pd
 import streamlit as st
 
+from photos import fetch_wikipedia_photo
 from scraper import fetch_bluebook
 
 st.set_page_config(
@@ -41,6 +44,12 @@ def load_df() -> pd.DataFrame:
                 "address":       (m.get("address") or "").replace("\n", ", "),
             })
     return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def auto_photo(full_name: str, country: str) -> str | None:
+    """Look up a Wikipedia headshot. Cached 24 h; returns URL or None."""
+    return fetch_wikipedia_photo(full_name, country)
 
 
 def titles_for_country(df: pd.DataFrame, country: str) -> list[str]:
@@ -119,15 +128,53 @@ def sort_by_protocol(roster: list, df: pd.DataFrame) -> list:
     return sorted(roster, key=key)
 
 
+# ── Photo helpers ─────────────────────────────────────────────────────────────
+
+def _to_data_url(uploaded_file) -> str:
+    data = uploaded_file.read()
+    b64 = base64.b64encode(data).decode()
+    mime = uploaded_file.type or "image/jpeg"
+    return f"data:{mime};base64,{b64}"
+
+
+@st.dialog("Set photo")
+def photo_dialog(i: int) -> None:
+    entry = st.session_state.roster[i]
+    person = resolve_by_name(df, entry["country"], entry["full_name"])
+    label = person["display_name"] if person is not None else entry["full_name"]
+    st.markdown(f"**{label}**  ·  {entry['country']}")
+
+    current = entry.get("photo")
+    if current:
+        st.image(current, width=140)
+        if st.button("Remove photo", type="secondary"):
+            st.session_state.roster[i]["photo"] = None
+            st.rerun()
+        st.divider()
+
+    uploaded = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png", "webp"])
+    if uploaded is not None:
+        st.session_state.roster[i]["photo"] = _to_data_url(uploaded)
+        st.rerun()
+
+    url = st.text_input("Or paste a photo URL", placeholder="https://…")
+    if url and st.button("Use URL", type="primary"):
+        st.session_state.roster[i]["photo"] = url
+        st.rerun()
+
+
 # ── Session state ─────────────────────────────────────────────────────────────
 
 if "roster" not in st.session_state:
-    # Each entry: {country, position, full_name}
+    # Each entry: {country, position, full_name, photo?}
     st.session_state.roster = []
+
+if "view_mode" not in st.session_state:
+    st.session_state.view_mode = "table"
 
 
 def add_entry(country: str, position: str, full_name: str) -> None:
-    st.session_state.roster.append({"country": country, "position": position, "full_name": full_name})
+    st.session_state.roster.append({"country": country, "position": position, "full_name": full_name, "photo": None})
 
 
 def remove_entry(i: int) -> None:
@@ -138,9 +185,9 @@ def on_roster_position_change(i: int) -> None:
     new_pos = st.session_state[f"rpos_{i}"]
     country = st.session_state.roster[i]["country"]
     st.session_state.roster[i]["position"] = new_pos
-    # Auto-select first person in the new position
     staff = staff_for_title(df, country, new_pos)
     st.session_state.roster[i]["full_name"] = staff.iloc[0]["name"] if not staff.empty else ""
+    st.session_state.roster[i]["photo"] = None  # person changed; clear photo
 
 
 def on_roster_person_change(i: int) -> None:
@@ -151,6 +198,7 @@ def on_roster_person_change(i: int) -> None:
     match = staff[staff["display_name"] == new_display]
     if not match.empty:
         st.session_state.roster[i]["full_name"] = match.iloc[0]["name"]
+        st.session_state.roster[i]["photo"] = None  # person changed; clear photo
 
 
 def move_entry(i: int, direction: int) -> None:
@@ -264,7 +312,7 @@ st.divider()
 
 # ── Roster ────────────────────────────────────────────────────────────────────
 
-rh1, rh2 = st.columns([6, 2])
+rh1, rh2, rh3 = st.columns([5, 2, 2])
 with rh1:
     st.subheader(f"Roster  ({len(st.session_state.roster)} attendees)")
 with rh2:
@@ -273,12 +321,53 @@ with rh2:
         if st.button("↕ Sort by protocol", use_container_width=True):
             st.session_state.roster = sort_by_protocol(st.session_state.roster, df)
             st.rerun()
+with rh3:
+    if st.session_state.roster:
+        st.write("")
+        label = "🪪 Card view" if st.session_state.view_mode == "table" else "☰ Table view"
+        if st.button(label, use_container_width=True):
+            st.session_state.view_mode = "cards" if st.session_state.view_mode == "table" else "table"
+            st.rerun()
 
 if not st.session_state.roster:
     st.info("Your roster is empty. Add attendees above.")
+
+elif st.session_state.view_mode == "cards":
+    # ── Card view ─────────────────────────────────────────────────────────────
+    CARDS_PER_ROW = 4
+    for row_start in range(0, len(st.session_state.roster), CARDS_PER_ROW):
+        cols = st.columns(CARDS_PER_ROW)
+        for col_idx, ei in enumerate(range(row_start, min(row_start + CARDS_PER_ROW, len(st.session_state.roster)))):
+            entry = st.session_state.roster[ei]
+            person = resolve_by_name(df, entry["country"], entry["full_name"])
+            display = person["display_name"] if person is not None else entry["full_name"]
+            rank = (person["rank"] if person is not None else "") or ""
+            manual_photo = entry.get("photo")
+            wp_photo = None if manual_photo else auto_photo(entry["full_name"], entry["country"])
+            effective_photo = manual_photo or wp_photo
+            with cols[col_idx]:
+                with st.container(border=True):
+                    if effective_photo:
+                        st.image(effective_photo, use_container_width=True)
+                        if wp_photo:
+                            st.caption("📖 Wikipedia")
+                    else:
+                        st.markdown(
+                            "<div style='height:120px;display:flex;align-items:center;"
+                            "justify-content:center;font-size:3rem;background:#f0f2f6;"
+                            "border-radius:4px'>🧑‍💼</div>",
+                            unsafe_allow_html=True,
+                        )
+                    st.markdown(f"**{display}**")
+                    st.caption(f"{entry['country']}")
+                    st.caption(f"{entry['position']}" + (f" · {rank}" if rank else ""))
+                    if st.button("📷 Photo", key=f"card_photo_{ei}", use_container_width=True):
+                        photo_dialog(ei)
+
 else:
-    # Column headers
-    h1, h2, h3, h4, h5, h6 = st.columns([3, 3, 4, 3, 3, 2])
+    # ── Table view ────────────────────────────────────────────────────────────
+    h0, h1, h2, h3, h4, h5, h6 = st.columns([1.2, 3, 3, 4, 3, 3, 2])
+    h0.markdown("**Photo**")
     h1.markdown("**Country**")
     h2.markdown("**Position**")
     h3.markdown("**Name**")
@@ -294,6 +383,9 @@ else:
         position = entry["position"]
         full_name = entry["full_name"]
         person = resolve_by_name(df, country, full_name)
+        manual_photo = entry.get("photo")
+        wp_photo = None if manual_photo else auto_photo(full_name, country)
+        effective_photo = manual_photo or wp_photo
 
         country_titles = titles_for_country(df, country)
         if position not in country_titles:
@@ -302,7 +394,16 @@ else:
         title_staff = staff_for_title(df, country, position)
         person_options = title_staff["display_name"].tolist() if not title_staff.empty else [full_name]
 
-        c1, c2, c3, c4, c5, c6 = st.columns([3, 3, 4, 3, 3, 2])
+        c0, c1, c2, c3, c4, c5, c6 = st.columns([1.2, 3, 3, 4, 3, 3, 2])
+
+        with c0:
+            if effective_photo:
+                st.image(effective_photo, width=55)
+                if st.button("📷", key=f"tphoto_{i}", help="Change / remove photo"):
+                    photo_dialog(i)
+            else:
+                if st.button("📷", key=f"tphoto_{i}", help="Add photo"):
+                    photo_dialog(i)
 
         with c1:
             st.write(country)
@@ -426,6 +527,9 @@ with st.sidebar:
                 isinstance(e, dict) and {"country", "position", "full_name"} <= e.keys()
                 for e in loaded
             ):
+                # Backfill photo field for entries saved before photo support
+                for e in loaded:
+                    e.setdefault("photo", None)
                 st.session_state.roster = loaded
                 st.success(f"Loaded {len(loaded)} attendees.")
                 st.rerun()
